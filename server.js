@@ -6,6 +6,7 @@
 const express = require('express');
 const http = require('http');
 const path = require('path');
+const fs = require('fs'); // NEW: Import File System module
 const Database = require('better-sqlite3');
 const TelegramBot = require('node-telegram-bot-api');
 require('dotenv').config(); // Load .env variables
@@ -37,7 +38,17 @@ app.use(express.json()); // For parsing Telegram webhook
 app.set('trust proxy', true);
 
 // --- Database Setup (SQLite) ---
-const db = new Database('portfolio.sqlite');
+// NEW: Setup a persistent data directory for the database
+const dbDir = './.data';
+if (!fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
+  console.log('Created persistent data directory at ./data');
+}
+// NEW: Save the database in the persistent disk location
+const dbPath = path.join(dbDir, 'portfolio.sqlite');
+const db = new Database(dbPath);
+console.log(`Database is now persistently stored at: ${dbPath}`);
+
 
 // Create tables if they don't exist
 db.exec(`
@@ -77,7 +88,7 @@ const initialConfig = {
   contact_phone_1: '+91 9036526421',
   contact_email: 'afzal24052002@gmail.com',
   contact_call: '+91 9036526421',
-  site_status: 'live' // NEW: 'live' or 'paused'
+  site_status: 'live' // 'live' or 'paused'
 };
 
 const stmt = db.prepare('INSERT OR IGNORE INTO site_config (key, value) VALUES (?, ?)');
@@ -101,7 +112,7 @@ function getConfig() {
   }, {});
 }
 
-// --- NEW: Site Status Middleware (Pause/Resume) ---
+// --- Site Status Middleware (Pause/Resume) ---
 app.use((req, res, next) => {
   // Allow Telegram webhook to pass through always
   if (req.path.startsWith('/api/webhook/')) {
@@ -538,7 +549,7 @@ app.get('/api/content', async (req, res) => {
   }
 });
 
-// 4. NEW: Handle Click Notifications
+// 4. Handle Click Notifications
 app.post('/api/notify-click', (req, res) => {
   const ip = req.ip;
   const { mediaType, project, caption } = req.body;

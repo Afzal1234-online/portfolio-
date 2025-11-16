@@ -1,7 +1,7 @@
 {
   "name": "telegram-cms-portfolio",
-  "version": "1.3.0",
-  "description": "A 3D artist portfolio fully managed via a Telegram bot with pause/resume and advanced tracking.",
+  "version": "1.4.0",
+  "description": "A 3D artist portfolio with persistent database and advanced tracking.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
