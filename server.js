@@ -20,7 +20,7 @@ const {
 
 if (!TELEGRAM_BOT_TOKEN || !ADMIN_CHAT_ID || !HOST_URL) {
   console.error('Missing critical environment variables!');
-  console.log('Please check your .env file. You need:');
+  console.log('Please check your .env file or Render environment settings. You need:');
   console.log('TELEGRAM_BOT_TOKEN');
   console.log('ADMIN_CHAT_ID (Your personal Telegram ID)');
   console.log('HOST_URL (e.g., https://your-app-name.onrender.com)');
@@ -31,7 +31,10 @@ if (!TELEGRAM_BOT_TOKEN || !ADMIN_CHAT_ID || !HOST_URL) {
 const app = express();
 const server = http.createServer(app);
 app.use(express.json()); // For parsing Telegram webhook
-app.use(express.static(path.join(__dirname, 'public'))); // Serve frontend
+
+// --- Trust Proxy ---
+// This is CRITICAL for getting the correct IP address on Render
+app.set('trust proxy', true);
 
 // --- Database Setup (SQLite) ---
 const db = new Database('portfolio.sqlite');
@@ -59,18 +62,21 @@ db.exec(`
     action TEXT NOT NULL,
     details TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS blocked_ips (
+    ip TEXT PRIMARY KEY
+  );
 `);
 
 // --- Initialize Site Config with Defaults ---
-// This runs on every start, ensuring config exists.
 const initialConfig = {
   profile_name: 'Mohammed Afzal',
   profile_title: '3D Artist | Exhibition Stalls | Anamorphic Videos | Motion Graphics',
   profile_desc: 'Passionate 3D Artist specializing in immersive experiences. From high-impact exhibition stalls to mind-bending anamorphic content, I bring digital concepts to life.',
-  profile_photo_file_id: '', // Empty by default
+  profile_photo_file_id: '',
   contact_phone_1: '+91 9036526421',
   contact_email: 'afzal24052002@gmail.com',
-  contact_telegram: 'https://t.me/your_bot_username_here', // Update this
+  contact_call: '+91 9036526421', // New "Call" number
 };
 
 const stmt = db.prepare('INSERT OR IGNORE INTO site_config (key, value) VALUES (?, ?)');
@@ -80,6 +86,21 @@ const trans = db.transaction((config) => {
   }
 });
 trans(initialConfig);
+console.log('Database initialized.');
+
+// --- IP Blocking Setup ---
+let blockedIPs = new Set(db.prepare('SELECT ip FROM blocked_ips').all().map(row => row.ip));
+
+// Middleware to check for blocked IPs
+// This MUST be the first middleware to run
+app.use((req, res, next) => {
+  const ip = req.ip;
+  if (blockedIPs.has(ip)) {
+    logAction('BLOCKED_ACCESS', `Blocked IP: ${ip}`);
+    return res.status(403).send('Forbidden');
+  }
+  next();
+});
 
 // --- Server-Sent Events (SSE) Setup ---
 let sseClients = [];
@@ -112,8 +133,18 @@ function broadcastUpdate() {
 function logAction(action, details = '') {
   try {
     db.prepare('INSERT INTO audit_log (action, details) VALUES (?, ?)').run(action, details);
+    console.log(`LOG: ${action} - ${details}`);
   } catch (e) {
     console.error('Audit Log Error:', e.message);
+  }
+}
+
+// New function to send notifications to the admin
+function notifyAdmin(message) {
+  try {
+    bot.sendMessage(ADMIN_CHAT_ID, message, { disable_notification: false });
+  } catch (e) {
+    console.error('Notify Admin Error:', e.message);
   }
 }
 
@@ -129,7 +160,7 @@ function updateConfig(key, value) {
   try {
     db.prepare('INSERT OR REPLACE INTO site_config (key, value) VALUES (?, ?)').run(key, value);
     logAction('CONFIG_UPDATE', `${key} = ${value}`);
-    broadcastUpdate();
+    broadcastUpdate(); // Tell frontend to refetch data
     return true;
   } catch (e) {
     console.error('Config Update Error:', e.message);
@@ -138,58 +169,78 @@ function updateConfig(key, value) {
 }
 
 function parseMediaCaption(caption = '') {
-  caption = caption.toLowerCase();
+  const lowerCaption = (caption || '').toLowerCase();
   let category = 'general';
-  if (caption.includes('anamorphic')) category = 'anamorphic';
-  else if (caption.includes('event')) category = 'event';
-  else if (caption.includes('stall')) category = 'stall';
+  
+  if (lowerCaption.includes('anamorphic')) category = 'anamorphic';
+  else if (lowerCaption.includes('event')) category = 'event';
+  else if (lowerCaption.includes('stall')) category = 'stall';
 
-  // Simple project name extraction: assumes "category [ProjectName] ..."
-  // e.g., "anamorphic ClientX" -> project_name: "ClientX"
   const words = (caption || '').split(' ');
   let projectName = '';
-  if (words.length > 1 && ['anamorphic', 'event', 'stall'].includes(words[0])) {
+  if (words.length > 1 && ['anamorphic', 'event', 'stall'].includes(words[0].toLowerCase())) {
     projectName = words[1];
-    // Capitalize it
     projectName = projectName.charAt(0).toUpperCase() + projectName.slice(1);
+  } else if (words.length > 0) {
+    projectName = words[0].charAt(0).toUpperCase() + words[0].slice(1);
   }
 
-  return { category, projectName };
+  return { category, projectName: projectName.replace(/[^a-zA-Z0-9]/g, '') };
 }
+
+// --- Visitor Notification Setup ---
+const recentIPs = new Set();
+app.use((req, res, next) => {
+  // Only track main page loads, not API calls or assets
+  if (req.path === '/' || req.path === '/index.html') {
+    const ip = req.ip; 
+    if (ip && !recentIPs.has(ip)) {
+      notifyAdmin(`🔔 New website visit from IP: ${ip}`);
+      recentIPs.add(ip);
+      // Clear IP after 1 hour to allow re-notification
+      setTimeout(() => recentIPs.delete(ip), 3600000); 
+    }
+  }
+  next();
+});
+
+
+// --- Static Frontend ---
+app.use(express.static(path.join(__dirname, 'public'))); // Serve frontend files
 
 // --- Telegram Bot Setup ---
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
 
-// Set Webhook
 const webhookUrl = `${HOST_URL}/api/webhook/${TELEGRAM_BOT_TOKEN}`;
 bot.setWebHook(webhookUrl)
   .then(() => console.log(`Webhook set successfully to ${webhookUrl}`))
   .catch((err) => console.error('Webhook Error:', err.message));
 
-
-// --- Telegram Message Handlers ---
-
-// Handle Photo Uploads
-bot.on('photo', async (msg) => {
-  if (String(msg.chat.id) !== ADMIN_CHAT_ID) {
-    return bot.sendMessage(msg.chat.id, 'Sorry, this is a private bot.');
+function isAuthorized(chatId) {
+  if (String(chatId) !== String(ADMIN_CHAT_ID)) {
+    logAction('UNAUTHORIZED_ACCESS', `Attempt from ChatID: ${chatId}`);
+    bot.sendMessage(chatId, 'Sorry, this is a private bot. You are not authorized.');
+    return false;
   }
+  return true;
+}
 
+// --- Telegram Handlers (Photo, Video) ---
+bot.on('photo', async (msg) => {
+  if (!isAuthorized(msg.chat.id)) return;
   const caption = msg.caption || '';
-  const photo = msg.photo[msg.photo.length - 1]; // Get largest size
+  const photo = msg.photo[msg.photo.length - 1];
   const fileId = photo.file_id;
   const fileUniqueId = photo.file_unique_id;
 
-  logAction('PHOTO_RECEIVED', `ChatID: ${msg.chat.id}, FileID: ${fileId}, Caption: ${caption}`);
+  logAction('PHOTO_RECEIVED', `FileID: ${fileId}, Caption: ${caption}`);
 
-  // Check for "profile photo" command
-  if (caption.toLowerCase().includes('profile photo')) {
+  if (caption.toLowerCase().includes('profile photo') || caption.toLowerCase().includes('profile')) {
     updateConfig('profile_photo_file_id', fileId);
     logAction('PROFILE_PHOTO_UPDATE', `New FileID: ${fileId}`);
     return bot.sendMessage(msg.chat.id, '✅ Profile photo updated!');
   }
 
-  // Process as regular media
   const { category, projectName } = parseMediaCaption(caption);
   try {
     db.prepare(`
@@ -206,19 +257,14 @@ bot.on('photo', async (msg) => {
   }
 });
 
-// Handle Video Uploads
 bot.on('video', async (msg) => {
-  if (String(msg.chat.id) !== ADMIN_CHAT_ID) {
-    return bot.sendMessage(msg.chat.id, 'Sorry, this is a private bot.');
-  }
-
+  if (!isAuthorized(msg.chat.id)) return;
   const caption = msg.caption || '';
   const fileId = msg.video.file_id;
   const fileUniqueId = msg.video.file_unique_id;
   
-  logAction('VIDEO_RECEIVED', `ChatID: ${msg.chat.id}, FileID: ${fileId}, Caption: ${caption}`);
+  logAction('VIDEO_RECEIVED', `FileID: ${fileId}, Caption: ${caption}`);
 
-  // Process as regular media
   const { category, projectName } = parseMediaCaption(caption);
   try {
     db.prepare(`
@@ -235,34 +281,36 @@ bot.on('video', async (msg) => {
   }
 });
 
-// Handle Text Commands
+// --- Telegram Text Command Handler ---
 bot.on('text', (msg) => {
-  if (String(msg.chat.id) !== ADMIN_CHAT_ID) return;
+  if (!isAuthorized(msg.chat.id)) return;
 
   const text = msg.text.trim();
   const [command, ...args] = text.split(' ');
   const value = args.join(' ');
 
-  logAction('COMMAND_RECEIVED', text);
+  logAction('COMMAND_RECEIVED', `"${text}"`);
 
   switch (command.toLowerCase()) {
+    // --- Set Commands ---
     case 'update':
     case 'set':
       const [subCommand, ...subArgs] = args;
       const subValue = subArgs.join(' ');
       
       if (!subValue) {
-        return bot.sendMessage(msg.chat.id, `Usage: set <key> <value>`);
+        return bot.sendMessage(msg.chat.id, `Usage: set <key> <value>\n(e.g., set phone +91...)`);
       }
-
       switch(subCommand.toLowerCase()) {
         case 'phone':
           updateConfig('contact_phone_1', subValue);
-          return bot.sendMessage(msg.chat.id, `✅ Phone updated to: ${subValue}`);
+          return bot.sendMessage(msg.chat.id, `✅ WhatsApp Phone updated to: ${subValue}`);
+        case 'call':
+          updateConfig('contact_call', subValue);
+          return bot.sendMessage(msg.chat.id, `✅ Call Now Phone updated to: ${subValue}`);
         case 'email':
           updateConfig('contact_email', subValue);
           return bot.sendMessage(msg.chat.id, `✅ Email updated to: ${subValue}`);
-        case 'description':
         case 'desc':
           updateConfig('profile_desc', subValue);
           return bot.sendMessage(msg.chat.id, `✅ Description updated!`);
@@ -272,17 +320,15 @@ bot.on('text', (msg) => {
         case 'title':
           updateConfig('profile_title', subValue);
           return bot.sendMessage(msg.chat.id, `✅ Title updated to: ${subValue}`);
-        case 'telegram':
-          updateConfig('contact_telegram', subValue);
-          return bot.sendMessage(msg.chat.id, `✅ Telegram link updated to: ${subValue}`);
       }
-      return bot.sendMessage(msg.chat.id, `Unknown set command: "${subCommand}"`);
+      return bot.sendMessage(msg.chat.id, `Unknown set command: "${subCommand}". Try 'phone', 'call', 'email', 'desc', 'name', or 'title'.`);
 
+    // --- Media Commands ---
     case 'delete':
     case 'remove':
       const fileUniqueId = args[0];
       if (!fileUniqueId) {
-        return bot.sendMessage(msg.chat.id, 'Usage: delete <file_unique_id>');
+        return bot.sendMessage(msg.chat.id, 'Usage: delete <file_unique_id>\n(Get the ID from the `list` command)');
       }
       try {
         const res = db.prepare('DELETE FROM media WHERE file_unique_id = ?').run(fileUniqueId);
@@ -299,39 +345,85 @@ bot.on('text', (msg) => {
     
     case 'list':
       try {
-        const media = db.prepare('SELECT file_unique_id, category, caption FROM media ORDER BY timestamp DESC LIMIT 10').all();
+        // Show ALL media, not just 10
+        const media = db.prepare('SELECT file_unique_id, category, caption, project_name FROM media ORDER BY timestamp DESC').all();
         if (media.length === 0) {
           return bot.sendMessage(msg.chat.id, 'No media found.');
         }
-        const list = media.map(m => `ID: ${m.file_unique_id}\nCat: ${m.category}\nCap: ${m.caption || 'N/A'}`).join('\n\n');
-        return bot.sendMessage(msg.chat.id, `Last 10 Media:\n\n${list}`);
+        // Use Markdown for 'click-to-copy'
+        const list = media.map(m => `*${m.project_name || 'Project'}* (${m.category})\nCap: ${m.caption || 'N/A'}\nID: \`${m.file_unique_id}\``).join('\n\n');
+        return bot.sendMessage(msg.chat.id, `*All Media (${media.length} items):*\n\n${list}`, { parse_mode: 'Markdown' });
       } catch (e) {
         return bot.sendMessage(msg.chat.id, `❌ Error listing: ${e.message}`);
       }
 
+    // --- IP Blocking Commands ---
+    case 'block':
+      const ipToBlock = args[0];
+      if (!ipToBlock) {
+        return bot.sendMessage(msg.chat.id, 'Usage: `block <ip_address>`');
+      }
+      try {
+        db.prepare('INSERT OR IGNORE INTO blocked_ips (ip) VALUES (?)').run(ipToBlock);
+        blockedIPs.add(ipToBlock); // Add to live set
+        logAction('IP_BLOCK', `IP: ${ipToBlock}`);
+        return bot.sendMessage(msg.chat.id, `🚫 IP ${ipToBlock} blocked.`);
+      } catch (e) {
+        return bot.sendMessage(msg.chat.id, `❌ Error blocking IP: ${e.message}`);
+      }
+
+    case 'unblock':
+      const ipToUnblock = args[0];
+      if (!ipToUnblock) {
+        return bot.sendMessage(msg.chat.id, 'Usage: `unblock <ip_address>`');
+      }
+      try {
+        const res = db.prepare('DELETE FROM blocked_ips WHERE ip = ?').run(ipToUnblock);
+        blockedIPs.delete(ipToUnblock); // Remove from live set
+        logAction('IP_UNBLOCK', `IP: ${ipToUnblock}`);
+        if (res.changes > 0) {
+          return bot.sendMessage(msg.chat.id, `✅ IP ${ipToUnblock} unblocked.`);
+        } else {
+          return bot.sendMessage(msg.chat.id, `🤷 IP ${ipToUnblock} was not found in the block list.`);
+        }
+      } catch (e) {
+        return bot.sendMessage(msg.chat.id, `❌ Error unblocking IP: ${e.message}`);
+      }
+
+    case 'listblocked':
+      const ips = Array.from(blockedIPs);
+      if (ips.length === 0) {
+        return bot.sendMessage(msg.chat.id, 'No IPs are currently blocked.');
+      }
+      return bot.sendMessage(msg.chat.id, `*Blocked IPs:*\n\`${ips.join('\n')}\``, { parse_mode: 'Markdown' });
+
+    // --- Help Command ---
     case '/start':
     case 'help':
       const helpText = `
 👋 Welcome, Admin!
 
-Here are your commands:
-
-*Media Uploads:*
-- Send a *Photo* or *Video* to upload it.
-- Caption with *'anamorphic'*, *'stall'*, or *'event'* to categorize.
-- Caption with *'profile photo'* to update your site's profile picture.
-
 *Content Updates:*
 - \`set name <Your Name>\`
 - \`set title <Your Title>\`
 - \`set desc <Your Description>\`
-- \`set phone <+91...>\`
+- \`set phone <+91...>\` (WhatsApp number)
+- \`set call <+91...>\` ("Call Now" number)
 - \`set email <your@email.com>\`
-- \`set telegram <https://t.me/...>\`
+
+*Media Uploads:*
+- Send a *Photo* or *Video* to upload.
+- Caption with *'anamorphic'*, *'stall'*, or *'event'* to categorize.
+- Caption with *'profile photo'* to update your site's profile picture.
 
 *Media Management:*
-- \`list\` - Show the 10 most recent media items with their IDs.
-- \`delete <file_unique_id>\` - Remove media from the site (get the ID from \`list\`).
+- \`list\` - Show ALL media items and their IDs.
+- \`delete <file_unique_id>\` - Remove media from the site.
+
+*Security:*
+- \`block <ip>\` - Block an IP address.
+- \`unblock <ip>\` - Unblock an IP address.
+- \`listblocked\` - Show all blocked IPs.
       `;
       return bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'Markdown' });
 
@@ -357,41 +449,31 @@ app.get('/api/content', async (req, res) => {
     const config = getConfig();
     const media = db.prepare('SELECT * FROM media ORDER BY timestamp DESC').all();
 
-    // Get a temporary, usable URL for each media item's file_id
-    // This is the most complex part. We must do this on the server.
     const getFileUrl = async (fileId) => {
       try {
-        // node-telegram-bot-api's getFileLink returns a full, temporary URL
         return await bot.getFileLink(fileId);
       } catch (e) {
         console.warn(`Could not get URL for file_id ${fileId}: ${e.message}`);
         logAction('FILE_LINK_ERROR', `FileID: ${fileId}, Error: ${e.message}`);
-        // If a file is deleted from Telegram, getFileLink will fail.
-        // We should probably remove it from the DB here.
         if (e.message.includes('400')) {
            db.prepare('DELETE FROM media WHERE file_id = ?').run(fileId);
            logAction('MEDIA_DELETE_STALE', `FileID: ${fileId}`);
-           // No need to broadcast, the content payload will just not include it.
+           broadcastUpdate();
         }
-        return null; // Don't include this media item
+        return null;
       }
     };
     
-    // Enrich profile photo
-    let profile_photo_url = 'https://placehold.co/300x300/1a1a20/e0e0e0?text=Profile'; // Default
+    let profile_photo_url = 'https://placehold.co/300x300/1a1a20/e0e0e0?text=Profile';
     if (config.profile_photo_file_id) {
       profile_photo_url = await getFileUrl(config.profile_photo_file_id);
     }
 
-    // Enrich all media items
     const enrichedMedia = await Promise.all(
       media.map(async (item) => {
         const url = await getFileUrl(item.file_id);
-        if (!url) return null; // Skip items that failed to get a URL
-        return {
-          ...item,
-          url: url,
-        };
+        if (!url) return null;
+        return { ...item, url: url };
       })
     );
 
@@ -405,10 +487,10 @@ app.get('/api/content', async (req, res) => {
       contacts: {
         phone: config.contact_phone_1,
         email: config.contact_email,
-        telegram: config.contact_telegram,
-        whatsapp_link: `https://wa.me/${config.contact_phone_1.replace(/[^0-9]/g, '')}`
+        call: config.contact_call,
+        whatsapp_link: `https://wa.me/${(config.contact_phone_1 || '').replace(/[^0-9]/g, '')}`
       },
-      media: enrichedMedia.filter(Boolean) // Filter out any null (failed) items
+      media: enrichedMedia.filter(Boolean)
     });
   } catch (e) {
     console.error('API Error /api/content:', e.message);
@@ -417,7 +499,7 @@ app.get('/api/content', async (req, res) => {
   }
 });
 
-// 4. Serve Frontend
+// 4. Serve Frontend (This MUST be last)
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
@@ -427,5 +509,3 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`Server listening on http://localhost:${PORT}`);
   logAction('SERVER_START');
 });
-
-

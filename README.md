@@ -1,121 +1,144 @@
-3D Artist Portfolio - Telegram CMS
+3D Artist Portfolio - Telegram CMS (v1.1)
+
 This is a complete, production-ready portfolio website for a 3D artist, where all content—media, profile info, and contact details—is managed entirely from a private Telegram bot.
-It's a full-stack application with a Node.js backend (server.js) and a dynamic HTML/CSS/JS frontend (public/index.html).
-Features
-Telegram-Powered CMS: Update your site by just sending messages to your bot.
-Dynamic Media Galleries: Upload photos and videos; the site automatically categorizes them based on your caption (anamorphic, event, stall).
-Dynamic Profile: Update your profile picture, name, title, and description from Telegram.
-Dynamic Contact Info: Update your phone, email, and Telegram links instantly.
-Real-Time Updates: Uses Server-Sent Events (SSE) to push updates to all visitors live. No page refresh needed.
-Persistent Database: Uses SQLite to store all media and config, so nothing is lost on restart.
-Secure Admin: All commands are locked to your specific, private ADMIN_CHAT_ID.
-Premium Frontend: A client-ready, responsive, dark-mode website with a lightbox viewer.
-1. Local Setup & Installation
+
+
+
+This version includes visitor IP notifications and IP blocking.
+
+
+
+New Features in v1.1
+
+Visitor Notifications: Get a Telegram message with the visitor's IP when they load your site.
+
+IP Blocking: New admin commands block <ip>, unblock <ip>, and listblocked to secure your site.
+
+"CALL Now" Button: Replaced the "Telegram" contact card with a "Call Now" button.
+
+Improved Media List: The list command now shows ALL media (not just 10) and formats IDs for easy copy/pasting.
+
+Video Optimization: Videos now preload metadata for faster, smoother playback.
+
+1\. How to Deploy (or Update)
+
 Prerequisites
+
 Node.js (v18 or later)
+
 A Telegram Bot Token
+
 Your Admin Chat ID
-How to get your Telegram Bot Token
-Open Telegram and search for the @BotFather.
-Start a chat and send /newbot.
-Follow the instructions to name your bot (e.g., "Afzal Portfolio Bot").
-BotFather will give you a Token. It looks like 123456:ABC-DEF.... Copy this.
-How to get your Admin Chat ID
-Search for your new bot in Telegram and send it a message (e.g., /start).
-Search for the @userinfobot in Telegram.
-Start a chat and it will immediately reply with your info.
-Copy your Id (e.g., 7076125469). This is your ADMIN_CHAT_ID.
-Installation Steps
-Download: Get the package.json and server.js files. Create a new folder for your project (e.g., afzal-portfolio) and place them inside.
-Create public folder: Inside your project folder, create a new folder named public.
-Add Frontend: Place the index.html file inside the public folder.
-Install Dependencies: Open a terminal in your project folder and run:
-npm install
 
+How to get your Telegram Bot Token \& Admin ID
 
-Create .env file: Create a file named .env in the root of your project. This file is critical for storing your secret keys.
-Edit .env file: Add your keys to the .env file. You must set HOST_URL for the webhook to work.
-# --- .env file ---
+Bot Token: Talk to @BotFather on Telegram. Send /newbot and follow the instructions.
 
-# 1. Your Bot Token from @BotFather
-TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+Admin ID: Talk to @userinfobot on Telegram. It will reply with your Id.
 
-# 2. Your personal Chat ID from @userinfobot
-ADMIN_CHAT_ID=7076125469
+Deployment Steps
 
-# 3. The public URL of your server.
-# For local testing, use a tool like ngrok (see below).
-# For deployment, this will be your Render/Vercel/Heroku URL.
-# e.g., [https://your-app-name.onrender.com](https://your-app-name.onrender.com)
-HOST_URL=[https://your-app-name.onrender.com](https://your-app-name.onrender.com)
+Create Project Folder: On your computer, create a folder (e.g., my-portfolio).
 
+Save Files:
 
-2. Running the Server
-For Production (Deployment)
-You will deploy this project to a hosting service. When you do, you will set the environment variables in the service's dashboard (not in a .env file).
-Run the start command (most services do this automatically):
-npm start
+Save package.json and server.js inside the my-portfolio folder.
 
+Create a new folder inside my-portfolio called public.
 
-For Local Development (with ngrok)
-The Telegram Webhook must have a public HTTPS URL. You can't use localhost. A tool called ngrok creates a secure public URL that tunnels to your local machine.
-Download ngrok and set it up.
-In a new terminal, start ngrok to expose your local port 3000:
-ngrok http 3000
+Save index.html inside the public folder.
 
+Upload to GitHub:
 
-ngrok will give you a "Forwarding" URL, like https://random-string.ngrok-free.app.
-Copy this HTTPS URL.
-Paste this URL into your .env file for the HOST_URL variable.
-HOST_URL=[https://random-string.ngrok-free.app](https://random-string.ngrok-free.app)
+Create a new, public repository on GitHub (e.g., my-portfolio-website).
 
+Click "Add file" -> "Upload files".
 
-Now, in your project terminal, start the server in "dev" mode (which auto-restarts):
-npm run dev
+Drag and drop package.json, server.js, README.md and the entire public folder into the upload box.
 
+Click "Commit changes".
 
-Your server is now running locally, and Telegram can send updates to your ngrok URL. Open http://localhost:3000 in your browser to see the site.
-3. How to Use (Telegram Commands)
+Deploy to Render:
+
+Sign up for Render.com using your GitHub account.
+
+Click "New +" -> "Web Service" and connect your my-portfolio-website repository.
+
+Use these settings:
+
+Name: afzal-portfolio (or your choice)
+
+Build Command: npm install
+
+Start Command: npm start
+
+Go to the "Environment" tab and add your 3 secrets:
+
+Key: TELEGRAM\_BOT\_TOKEN, Value: 8252...
+
+Key: ADMIN\_CHAT\_ID, Value: 7076...
+
+Key: HOST\_URL, Value: httpsS://afzal-portfolio.onrender.com (Your Render URL)
+
+Click "Create Web Service".
+
+2\. How to Use (Telegram Commands)
+
 All commands are sent as messages to your bot from your admin account.
-Uploading Media
-To upload a Photo/Video: Just send the file to the bot.
-To categorize: Add a caption when you upload.
-anamorphic project-x - Puts in "Anamorphic" gallery, sets Project Name to "Project-x".
-event client-y walkthrough - Puts in "Event Walkthroughs" gallery.
-stall design - Puts in "Stall Walkthroughs" gallery.
-my new logo - No keywords, so it goes to "General".
-To set Profile Photo: Send a photo with the exact caption:
-profile photo
-Managing Content
-Set Name: set name Mohammed Afzal
-Set Title: set title 3D Generalist
-Set Description: set desc New description text here...
-Set Phone: set phone +91 9876543210
-Set Email: set email new-email@example.com
-Set Telegram Link: set telegram https://t.me/your_username
-Managing Media
-List Media: list
-The bot will reply with the 10 most recent media items and their Unique IDs.
-Delete Media: delete <file_unique_id>
-Copy the file_unique_id from the list command.
-Example: delete BQADAgADDAADy...
-Help
-Get Help: help or /start
+
+
+
+Content Updates:
+
+set name <Your Name>
+
+set title <Your Title>
+
+set desc <Your Description>
+
+set phone <+91...> (This is for the WhatsApp button)
+
+set call <+91...> (This is for the "Call Now" button)
+
+set email <your@email.com>
+
+Media Uploads:
+
+Send a Photo or Video to upload it.
+
+Caption with anamorphic, stall, or event to categorize it.
+
+Caption with profile photo to update your site's profile picture.
+
+Media Management:
+
+list
+
+Shows ALL media items and their IDs.
+
+On mobile, you can tap the ID: to copy it.
+
+delete <file\_unique\_id>
+
+Removes media from the site. (Copy the ID from the list command).
+
+Security (New!):
+
+block <ip>
+
+Blocks an IP address from visiting your site. (Get the IP from the visitor notification).
+
+unblock <ip>
+
+Unblocks an IP address.
+
+listblocked
+
+Shows all IPs you have blocked.
+
+Help:
+
+help or /start
+
 The bot will send you this list of commands.
-4. Deployment
-This project is ready to be deployed to any service that supports Node.js. Render is highly recommended.
-Deploying to Render (Recommended)
-Push your project (including package.json, server.js, and the public folder) to a GitHub repository. DO NOT push your .env file.
-Sign up for Render.
-Create a new "Web Service".
-Connect your GitHub repository.
-Set the Root Directory (if needed, but should be blank).
-Set the Build Command: npm install
-Set the Start Command: npm start
-Go to the "Environment" tab and add your three environment variables:
-TELEGRAM_BOT_TOKEN
-ADMIN_CHAT_ID
-HOST_URL (This will be your new Render URL, e.g., https://your-app.onrender.com)
-Click "Create Web Service". Render will build and deploy your app.
-The first time it starts, server.js will automatically set the Telegram webhook to your new Render URL.
-Your site is live! You can now manage it from Telegram.
+
