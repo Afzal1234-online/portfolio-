@@ -1125,6 +1125,12 @@
                 try {
                     const response = await fetch('/api/content');
                     if (!response.ok) {
+                        // Check for 503 Maintenance Mode
+                        if (response.status === 503) {
+                            // The server is paused, so we replace the whole page
+                            document.body.innerHTML = await response.text();
+                            return;
+                        }
                         throw new Error(`HTTP error! status: ${response.status}`);
                     }
                     const data = await response.json();
@@ -1322,6 +1328,9 @@
                 elements.lightboxProject.textContent = item.project_name || (item.type === 'photo' ? 'Image' : 'Video');
                 elements.lightboxCaption.textContent = item.caption || '';
                 
+                // --- UPDATED: Send notification on any click ---
+                sendClickNotification(item);
+
                 if (item.type === 'photo') {
                     elements.lightboxImg.src = item.url;
                     elements.lightboxImg.style.display = 'block';
@@ -1345,6 +1354,26 @@
                 elements.lightboxVideo.pause();
                 elements.lightboxVideo.src = '';
             }
+
+            // --- NEW: Function to send click notification ---
+            async function sendClickNotification(item) {
+                try {
+                    await fetch('/api/notify-click', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            mediaType: item.type,
+                            project: item.project_name || '',
+                            caption: item.caption || ''
+                        }),
+                    });
+                } catch (error) {
+                    console.warn('Could not send click notification', error);
+                }
+            }
+            // --- END NEW ---
 
             // --- Mobile Nav ---
             function initMobileNav() {
@@ -1407,3 +1436,5 @@
 
 </body>
 </html>
+
+
