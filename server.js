@@ -76,7 +76,8 @@ const initialConfig = {
   profile_photo_file_id: '',
   contact_phone_1: '+91 9036526421',
   contact_email: 'afzal24052002@gmail.com',
-  contact_call: '+91 9036526421', // New "Call" number
+  contact_call: '+91 9036526421',
+  site_status: 'live' // NEW: 'live' or 'paused'
 };
 
 const stmt = db.prepare('INSERT OR IGNORE INTO site_config (key, value) VALUES (?, ?)');
@@ -91,8 +92,38 @@ console.log('Database initialized.');
 // --- IP Blocking Setup ---
 let blockedIPs = new Set(db.prepare('SELECT ip FROM blocked_ips').all().map(row => row.ip));
 
-// Middleware to check for blocked IPs
-// This MUST be the first middleware to run
+// --- Helper Functions (getConfig must be defined before use) ---
+function getConfig() {
+  const rows = db.prepare('SELECT key, value FROM site_config').all();
+  return rows.reduce((acc, row) => {
+    acc[row.key] = row.value;
+    return acc;
+  }, {});
+}
+
+// --- NEW: Site Status Middleware (Pause/Resume) ---
+app.use((req, res, next) => {
+  // Allow Telegram webhook to pass through always
+  if (req.path.startsWith('/api/webhook/')) {
+    return next();
+  }
+
+  const config = getConfig();
+  if (config.site_status === 'paused') {
+    logAction('SITE_PAUSED', `Blocked request to ${req.path} from ${req.ip}`);
+    // Send a simple "Under Maintenance" page
+    return res.status(503).send(`
+      <html lang="en">
+        <head><title>Under Maintenance</title><style>body{font-family:sans-serif;background:#050507;color:#e0e0e0;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;}div{text-align:center;border:1px solid rgba(255,255,255,0.1);padding:40px;border-radius:16px;background:rgba(16,16,22,0.6);}h1{color:#fff;}p{color:#888;}</style></head>
+        <body><div><h1>Site Under Maintenance</h1><p>This portfolio is temporarily offline. Please check back soon.</p></div></body>
+      </html>
+    `);
+  }
+  next();
+});
+
+
+// --- IP Blocking Middleware ---
 app.use((req, res, next) => {
   const ip = req.ip;
   if (blockedIPs.has(ip)) {
@@ -142,19 +173,13 @@ function logAction(action, details = '') {
 // New function to send notifications to the admin
 function notifyAdmin(message) {
   try {
-    bot.sendMessage(ADMIN_CHAT_ID, message, { disable_notification: false });
+    bot.sendMessage(ADMIN_CHAT_ID, message, { parse_mode: 'Markdown', disable_notification: false });
   } catch (e) {
     console.error('Notify Admin Error:', e.message);
   }
 }
 
-function getConfig() {
-  const rows = db.prepare('SELECT key, value FROM site_config').all();
-  return rows.reduce((acc, row) => {
-    acc[row.key] = row.value;
-    return acc;
-  }, {});
-}
+// getConfig was moved up
 
 function updateConfig(key, value) {
   try {
@@ -195,7 +220,8 @@ app.use((req, res, next) => {
   if (req.path === '/' || req.path === '/index.html') {
     const ip = req.ip; 
     if (ip && !recentIPs.has(ip)) {
-      notifyAdmin(`🔔 New website visit from IP: ${ip}`);
+      // UPDATED: More descriptive notification
+      notifyAdmin(`🔔 Page View / Refresh\nFrom IP: \`${ip}\``);
       recentIPs.add(ip);
       // Clear IP after 1 hour to allow re-notification
       setTimeout(() => recentIPs.delete(ip), 3600000); 
@@ -345,12 +371,10 @@ bot.on('text', (msg) => {
     
     case 'list':
       try {
-        // Show ALL media, not just 10
         const media = db.prepare('SELECT file_unique_id, category, caption, project_name FROM media ORDER BY timestamp DESC').all();
         if (media.length === 0) {
           return bot.sendMessage(msg.chat.id, 'No media found.');
         }
-        // Use Markdown for 'click-to-copy'
         const list = media.map(m => `*${m.project_name || 'Project'}* (${m.category})\nCap: ${m.caption || 'N/A'}\nID: \`${m.file_unique_id}\``).join('\n\n');
         return bot.sendMessage(msg.chat.id, `*All Media (${media.length} items):*\n\n${list}`, { parse_mode: 'Markdown' });
       } catch (e) {
@@ -397,6 +421,17 @@ bot.on('text', (msg) => {
       }
       return bot.sendMessage(msg.chat.id, `*Blocked IPs:*\n\`${ips.join('\n')}\``, { parse_mode: 'Markdown' });
 
+    // --- NEW PAUSE/RESUME COMMANDS ---
+    case 'pause':
+      updateConfig('site_status', 'paused');
+      logAction('SITE_PAUSE', 'Site paused by admin');
+      return bot.sendMessage(msg.chat.id, '⏸️ Website is now PAUSED. Visitors will see the maintenance page.');
+
+    case 'resume':
+      updateConfig('site_status', 'live');
+      logAction('SITE_RESUME', 'Site resumed by admin');
+      return bot.sendMessage(msg.chat.id, '▶️ Website is now LIVE.');
+
     // --- Help Command ---
     case '/start':
     case 'help':
@@ -419,6 +454,10 @@ bot.on('text', (msg) => {
 *Media Management:*
 - \`list\` - Show ALL media items and their IDs.
 - \`delete <file_unique_id>\` - Remove media from the site.
+
+*Site Management (NEW):*
+- \`pause\` - Show a maintenance page to visitors.
+- \`resume\` - Make the site live again.
 
 *Security:*
 - \`block <ip>\` - Block an IP address.
@@ -499,7 +538,26 @@ app.get('/api/content', async (req, res) => {
   }
 });
 
-// 4. Serve Frontend (This MUST be last)
+// 4. NEW: Handle Click Notifications
+app.post('/api/notify-click', (req, res) => {
+  const ip = req.ip;
+  const { mediaType, project, caption } = req.body;
+
+  if (mediaType === 'video') {
+    logAction('VIDEO_CLICK', `IP: ${ip}, Project: ${project}, Caption: ${caption}`);
+    // Send notification to admin
+    notifyAdmin(`▶️ Video Clicked: *${project || 'Video'}*\n(Caption: ${caption || 'N/A'})\nFrom IP: \`${ip}\``);
+  } else {
+    // UPDATED: Handle photo clicks
+    logAction('PHOTO_CLICK', `IP: ${ip}, Project: ${project}, Caption: ${caption}`);
+    notifyAdmin(`🖼️ Image Clicked: *${project || 'Image'}*\n(Caption: ${caption || 'N/A'})\nFrom IP: \`${ip}\``);
+  }
+  
+  res.sendStatus(200); // Send "OK" immediately
+});
+
+
+// 5. Serve Frontend (This MUST be last)
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
