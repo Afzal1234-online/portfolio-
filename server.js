@@ -22,7 +22,7 @@ const {
 
 if (!TELEGRAM_BOT_TOKEN || !ADMIN_CHAT_ID || !HOST_URL || !DATABASE_URL) {
   console.error('Missing critical environment variables!');
-  // ... (error logging)
+  console.error('Please provide TELEGRAM_BOT_TOKEN, ADMIN_CHAT_ID, HOST_URL, and DATABASE_URL.');
   process.exit(1);
 }
 
@@ -41,8 +41,7 @@ const db = new Pool({
 async function initializeDatabase() {
   console.log('Connecting to database...');
   try {
-    // ... (site_config, media, audit_log, blocked_ips, user_state tables - same as v1.8) ...
-    await db.query(`CREATE TABLE IF NOT EXISTS site_config (key TEXT PRIMARY KEY, value TEXT);`);
+    // Media table
     await db.query(`
       CREATE TABLE IF NOT EXISTS media (
         file_unique_id TEXT PRIMARY KEY,
@@ -54,6 +53,16 @@ async function initializeDatabase() {
         timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       );
     `);
+    
+    // Config table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS site_config (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      );
+    `);
+    
+    // Audit log table
     await db.query(`
       CREATE TABLE IF NOT EXISTS audit_log (
         id SERIAL PRIMARY KEY,
@@ -62,11 +71,15 @@ async function initializeDatabase() {
         details TEXT
       );
     `);
+    
+    // IP block table
     await db.query(`
       CREATE TABLE IF NOT EXISTS blocked_ips (
         ip TEXT PRIMARY KEY
       );
     `);
+    
+    // User state table
     await db.query(`
       CREATE TABLE IF NOT EXISTS user_state (
         chat_id TEXT PRIMARY KEY,
@@ -100,26 +113,39 @@ async function initializeDatabase() {
 // --- IP Blocking Setup ---
 let blockedIPs = new Set();
 async function loadBlockedIPs() {
-  const { rows } = await db.query('SELECT ip FROM blocked_ips');
-  blockedIPs = new Set(rows.map(row => row.ip));
-  console.log(`Loaded ${blockedIPs.size} blocked IPs.`);
+  try {
+    const { rows } = await db.query('SELECT ip FROM blocked_ips');
+    blockedIPs = new Set(rows.map(row => row.ip));
+    console.log(`Loaded ${blockedIPs.size} blocked IPs.`);
+  } catch(e) {
+    console.error("Error loading blocked IPs:", e.message);
+  }
 }
 
 // --- User State Helper Functions ---
 async function getUserState(chatId) {
-  const { rows } = await db.query('SELECT state, context FROM user_state WHERE chat_id = $1', [String(chatId)]);
-  if (rows.length > 0) {
-    return rows[0];
+  try {
+    const { rows } = await db.query('SELECT state, context FROM user_state WHERE chat_id = $1', [String(chatId)]);
+    if (rows.length > 0) {
+      return rows[0];
+    }
+    return { state: 'idle', context: null };
+  } catch (e) {
+    console.error("Error getting user state:", e.message);
+    return { state: 'idle', context: null };
   }
-  return { state: 'idle', context: null };
 }
 
 async function setUserState(chatId, state, context = null) {
-  const query = `
-    INSERT INTO user_state (chat_id, state, context) VALUES ($1, $2, $3)
-    ON CONFLICT (chat_id) DO UPDATE SET state = $2, context = $3
-  `;
-  await db.query(query, [String(chatId), state, context]);
+  try {
+    const query = `
+      INSERT INTO user_state (chat_id, state, context) VALUES ($1, $2, $3)
+      ON CONFLICT (chat_id) DO UPDATE SET state = $2, context = $3
+    `;
+    await db.query(query, [String(chatId), state, context]);
+  } catch (e) {
+    console.error("Error setting user state:", e.message);
+  }
 }
 
 async function clearUserState(chatId) {
@@ -127,15 +153,19 @@ async function clearUserState(chatId) {
 }
 
 // --- Other Helper Functions ---
-// ... (getConfig, sseHandler, broadcastUpdate, logAction, notifyAdmin, updateConfig, parseMediaCaption) ...
-// (These are the same as v1.8)
 async function getConfig() {
-  const { rows } = await db.query('SELECT key, value FROM site_config');
-  return rows.reduce((acc, row) => {
-    acc[row.key] = row.value;
-    return acc;
-  }, {});
+  try {
+    const { rows } = await db.query('SELECT key, value FROM site_config');
+    return rows.reduce((acc, row) => {
+      acc[row.key] = row.value;
+      return acc;
+    }, {});
+  } catch (e) {
+    console.error("Error getting config:", e.message);
+    return {}; // Return empty config on error
+  }
 }
+
 let sseClients = [];
 function sseHandler(req, res) {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -151,12 +181,14 @@ function sseHandler(req, res) {
     logAction('SSE_DISCONNECT', `Client ${clientId} disconnected`);
   });
 }
+
 function broadcastUpdate() {
   logAction('SSE_BROADCAST', `Sending update to ${sseClients.length} clients`);
   for (const client of sseClients) {
     client.res.write('data: update\n\n');
   }
 }
+
 async function logAction(action, details = '') {
   try {
     await db.query('INSERT INTO audit_log (action, details) VALUES ($1, $2)', [action, details]);
@@ -165,6 +197,7 @@ async function logAction(action, details = '') {
     console.error('Audit Log Error:', e.message);
   }
 }
+
 function notifyAdmin(message) {
   try {
     bot.sendMessage(ADMIN_CHAT_ID, message, { parse_mode: 'Markdown', disable_notification: false });
@@ -172,6 +205,7 @@ function notifyAdmin(message) {
     console.error('Notify Admin Error:', e.message);
   }
 }
+
 async function updateConfig(key, value) {
   try {
     const query = `
@@ -187,22 +221,34 @@ async function updateConfig(key, value) {
     return false;
   }
 }
+
 function parseMediaCaption(caption = '') {
   const lowerCaption = (caption || '').toLowerCase();
   let category = 'general';
   if (lowerCaption.includes('anamorphic')) category = 'anamorphic';
   else if (lowerCaption.includes('event')) category = 'event';
   else if (lowerCaption.includes('stall')) category = 'stall';
+  
   const words = (caption || '').split(' ');
   let projectName = '';
-  if (words.length > 1 && ['anamorphic', 'event', 'stall'].includes(words[0].toLowerCase())) {
-    projectName = words[1];
-    projectName = projectName.charAt(0).toUpperCase() + projectName.slice(1);
+  
+  const categoryWords = ['anamorphic', 'event', 'stall', 'general'];
+  const firstWordLower = words.length > 0 ? words[0].toLowerCase() : '';
+  
+  if (words.length > 1 && categoryWords.includes(firstWordLower)) {
+    projectName = words.slice(1).join(' '); // Use rest of caption as project name
   } else if (words.length > 0) {
-    projectName = words[0].charAt(0).toUpperCase() + words[0].slice(1);
+    projectName = words.join(' '); // Use whole caption as project name
   }
-  return { category, projectName: projectName.replace(/[^a-zA-Z0-9]/g, '') };
+  
+  // Basic capitalization
+  if (projectName) {
+      projectName = projectName.charAt(0).toUpperCase() + projectName.slice(1);
+  }
+
+  return { category, projectName: projectName.replace(/[^a-zA-Z0-9\s]/g, '') }; // Allow spaces
 }
+
 function parseExternalLink(link) {
   try {
     const url = new URL(link);
@@ -222,18 +268,22 @@ function parseExternalLink(link) {
 }
 
 // --- Middleware (Pause, IP Block, Visitor Notify) ---
-// ... (omitting duplicate middleware code... same as v1.8) ...
 app.use(async (req, res, next) => {
   if (req.path.startsWith('/api/webhook/')) return next();
-  const config = await getConfig();
-  if (config.site_status === 'paused') {
-    logAction('SITE_PAUSED', `Blocked request to ${req.path} from ${req.ip}`);
-    return res.status(503).send(
-      `<html lang="en"><head><title>Under Maintenance</title><style>body{font-family:sans-serif;background:#050507;color:#e0e0e0;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;}div{text-align:center;border:1px solid rgba(255,255,255,0.1);padding:40px;border-radius:16px;background:rgba(16,16,22,0.6);}h1{color:#fff;}p{color:#888;}</style></head><body><div><h1>Site Under Maintenance</h1><p>This portfolio is temporarily offline. Please check back soon.</p></div></body></html>`
-    );
+  try {
+    const config = await getConfig();
+    if (config.site_status === 'paused') {
+      logAction('SITE_PAUSED', `Blocked request to ${req.path} from ${req.ip}`);
+      return res.status(503).send(
+        `<html lang="en"><head><title>Under Maintenance</title><style>body{font-family:sans-serif;background:#050507;color:#e0e0e0;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;}div{text-align:center;border:1px solid rgba(255,255,255,0.1);padding:40px;border-radius:16px;background:rgba(16,16,22,0.6);}h1{color:#fff;}p{color:#888;}</style></head><body><div><h1>Site Under Maintenance</h1><p>This portfolio is temporarily offline. Please check back soon.</p></div></body></html>`
+      );
+    }
+    next();
+  } catch(e) {
+    next(); // Fail open if config check fails
   }
-  next();
 });
+
 app.use((req, res, next) => {
   const ip = req.ip;
   if (blockedIPs.has(ip)) {
@@ -242,6 +292,7 @@ app.use((req, res, next) => {
   }
   next();
 });
+
 const recentIPs = new Set();
 app.use((req, res, next) => {
   if (req.path === '/' || req.path === '/index.html') {
@@ -249,7 +300,7 @@ app.use((req, res, next) => {
     if (ip && !recentIPs.has(ip)) {
       notifyAdmin(`🔔 Page View / Refresh\nFrom IP: \`${ip}\``);
       recentIPs.add(ip);
-      setTimeout(() => recentIPs.delete(ip), 3600000);
+      setTimeout(() => recentIPs.delete(ip), 3600000); // 1 hour cooldown
     }
   }
   next();
@@ -277,7 +328,6 @@ function isAuthorized(chatId) {
 }
 
 // --- Telegram Handlers (Photo, Video) ---
-// This is now the *second* part of the conversation
 bot.on('photo', async (msg) => {
   if (!isAuthorized(msg.chat.id)) return;
   const chatId = String(msg.chat.id);
@@ -315,6 +365,7 @@ bot.on('photo', async (msg) => {
     bot.sendMessage(chatId, `❌ Error adding photo: ${e.message}`);
   }
 });
+
 bot.on('video', async (msg) => {
   if (!isAuthorized(msg.chat.id)) return;
   // This is a normal media upload (for <20MB files)
@@ -343,7 +394,7 @@ bot.on('video', async (msg) => {
 });
 
 
-// --- Telegram Text Command Handler (UPDATED FOR /addbatch) ---
+// --- Telegram Text Command Handler (v1.9) ---
 bot.on('text', async (msg) => {
   if (!isAuthorized(msg.chat.id)) return;
   const chatId = String(msg.chat.id);
@@ -354,7 +405,9 @@ bot.on('text', async (msg) => {
   if (text.startsWith('/')) {
     logAction('COMMAND_RECEIVED', `"${text}"`);
     const [command, ...args] = text.split(' ');
-    const value = args.join(' ');
+    
+    // Clear state on any new command, just in case
+    await clearUserState(chatId); 
 
     switch (command.toLowerCase()) {
       case '/start':
@@ -422,7 +475,6 @@ You can use the menu button [/] to see commands.
         await setUserState(chatId, 'awaiting_add_link');
         return bot.sendMessage(chatId, 'OK, send me the link (YouTube or G-Drive).');
       
-      // --- NEW: /addbatch ---
       case '/addbatch':
         await setUserState(chatId, 'awaiting_batch_links');
         return bot.sendMessage(chatId, 'OK, paste your list of links (YouTube or G-Drive), one link per line.');
@@ -437,7 +489,6 @@ You can use the menu button [/] to see commands.
         await setUserState(chatId, 'awaiting_editdesc_id');
         return bot.sendMessage(chatId, 'OK, send me the ID of the media to edit.\n(You can get the ID from `/list`)');
       
-      // ... (other commands: /list, /block, /unblock, /listblocked, /pause, /resume) ...
       case '/list':
         try {
           const { rows } = await db.query('SELECT file_unique_id, type, category, caption, project_name FROM media ORDER BY timestamp DESC');
@@ -467,17 +518,21 @@ You can use the menu button [/] to see commands.
         return bot.sendMessage(chatId, '▶️ Website is now LIVE.');
 
       default:
-        await clearUserState(chatId);
         return bot.sendMessage(chatId, '❓ Unknown command. Type /help to see all commands.');
     }
   }
 
   // --- Part 2: Handle plain text (Fulfilling the state) ---
   if (state === 'idle') {
+    // User sent plain text without a command.
+    // This is where media album uploads might send text.
+    // We will just ignore it and ask for a command.
+    logAction('IDLE_TEXT', `Ignoring: "${text}"`);
     return bot.sendMessage(chatId, '❓ Send a command starting with / (e.g., /help).');
   }
 
   try {
+    let clearState = true; // By default, clear state after processing
     switch (state) {
       // --- Profile States ---
       case 'awaiting_name':
@@ -512,12 +567,16 @@ You can use the menu button [/] to see commands.
           return bot.sendMessage(chatId, `❌ Invalid Link. Only YouTube and Google Drive links are supported.\nPlease send me a valid link, or send /help to cancel.`);
         }
         await setUserState(chatId, 'awaiting_add_category', JSON.stringify(parsedLink));
+        clearState = false; // We are transitioning to the next state
         return bot.sendMessage(chatId, `OK, link received. Now, what *category* is this video? (e.g., \`anamorphic\`, \`event\`, \`stall\`, or \`general\`)`);
+      
       case 'awaiting_add_category':
         const { type, id: fileId, unique_id: fileUniqueId } = JSON.parse(context);
         const category = text.toLowerCase();
         await setUserState(chatId, 'awaiting_add_project', JSON.stringify({ fileId, fileUniqueId, type, category }));
+        clearState = false; // Transitioning
         return bot.sendMessage(chatId, `OK, category is "${category}". Finally, what is the *project name* for this video?`);
+      
       case 'awaiting_add_project':
         const { fileId: f, fileUniqueId: fu, type: t, category: c } = JSON.parse(context);
         const projectName = text;
@@ -531,19 +590,21 @@ You can use the menu button [/] to see commands.
         await bot.sendMessage(chatId, `✅ ${t} video added to "${parsedCat}" gallery!`);
         break;
         
-      // --- NEW: Batch Add States ---
+      // --- Batch Add States ---
       case 'awaiting_batch_links':
         const links = text.split('\n').map(link => parseExternalLink(link.trim())).filter(Boolean);
         if (links.length === 0) {
           return bot.sendMessage(chatId, `❌ I found 0 valid links. Only YouTube and Google Drive links are supported.\nPlease send me a valid list of links, or send /help to cancel.`);
         }
         await setUserState(chatId, 'awaiting_batch_category', JSON.stringify(links));
+        clearState = false; // Transitioning
         return bot.sendMessage(chatId, `OK, I found ${links.length} valid links. Now, what *category* should this batch be? (e.g., \`anamorphic\`, \`event\`, \`stall\`)`);
       
       case 'awaiting_batch_category':
         const batchLinks = JSON.parse(context);
         const batchCategory = text.toLowerCase();
         await setUserState(chatId, 'awaiting_batch_project', JSON.stringify({ links: batchLinks, category: batchCategory }));
+        clearState = false; // Transitioning
         return bot.sendMessage(chatId, `OK, category is "${batchCategory}". Finally, what is the *project name* for this whole batch?`);
       
       case 'awaiting_batch_project':
@@ -551,7 +612,6 @@ You can use the menu button [/] to see commands.
         const finalProjectName = text;
         const { category: finalParsedCat, projectName: finalParsedProj } = parseMediaCaption(finalCategory + ' ' + finalProjectName);
         
-        // Use a database transaction to add all media at once
         const client = await db.connect();
         try {
           await client.query('BEGIN');
@@ -588,10 +648,12 @@ You can use the menu button [/] to see commands.
           await bot.sendMessage(chatId, `✅ Media ${text} deleted.`);
         } else {
           await bot.sendMessage(chatId, `❌ Media ${text} not found. Send another ID, or /help to cancel.`);
+          clearState = false; // Keep waiting for a valid ID
         }
         break;
       case 'awaiting_edittitle_id':
         await setUserState(chatId, 'awaiting_edittitle_value', text); // Save the ID in context
+        clearState = false; // Transitioning
         return bot.sendMessage(chatId, `OK, editing media ${text}. What is the new *title*?`);
       case 'awaiting_edittitle_value':
         await db.query(`UPDATE media SET project_name = $1 WHERE file_unique_id = $2`, [text, context]);
@@ -601,6 +663,7 @@ You can use the menu button [/] to see commands.
         break;
       case 'awaiting_editdesc_id':
         await setUserState(chatId, 'awaiting_editdesc_value', text); // Save the ID in context
+        clearState = false; // Transitioning
         return bot.sendMessage(chatId, `OK, editing media ${text}. What is the new *description*?`);
       case 'awaiting_editdesc_value':
         await db.query(`UPDATE media SET caption = $1 WHERE file_unique_id = $2`, [text, context]);
@@ -622,13 +685,18 @@ You can use the menu button [/] to see commands.
         else await bot.sendMessage(chatId, `🤷 IP ${text} was not found.`);
         break;
       
+      case 'awaiting_profilephoto':
+        // This state only accepts a photo.
+        await bot.sendMessage(chatId, 'I am waiting for a photo. Please send me an image file, or send /help to cancel.');
+        clearState = false; // Keep waiting
+        break;
+
       default:
         await bot.sendMessage(chatId, 'I was waiting for something, but I am confused. Send /help to start over.');
     }
     
     // If we successfully handled the state, clear it.
-    const stateToClear = ['awaiting_add_link', 'awaiting_add_category', 'awaiting_add_project', 'awaiting_batch_links', 'awaiting_batch_category', 'awaiting_batch_project', 'awaiting_edittitle_id', 'awaiting_edittitle_value', 'awaiting_editdesc_id', 'awaiting_editdesc_value'];
-    if (!stateToClear.includes(state)) {
+    if (clearState) {
       await clearUserState(chatId);
     }
 
@@ -639,35 +707,45 @@ You can use the menu button [/] to see commands.
   }
 });
 
+
 // --- API Endpoints ---
-// ... (omitting duplicate /api/webhook, /api/sse, /api/content, /api/notify-click... same as v1.8) ...
 app.post(`/api/webhook/${TELEGRAM_BOT_TOKEN}`, (req, res) => {
   bot.processUpdate(req.body);
   res.sendStatus(200);
 });
+
 app.get('/api/sse', sseHandler);
+
 app.get('/api/content', async (req, res) => {
   try {
     const config = await getConfig();
     const { rows: media } = await db.query('SELECT * FROM media ORDER BY timestamp DESC');
+    
     const getFileUrl = async (fileId) => {
       try {
         return await bot.getFileLink(fileId);
       } catch (e) {
         console.warn(`Could not get URL for file_id ${fileId}: ${e.message}`);
         logAction('FILE_LINK_ERROR', `FileID: ${fileId}, Error: ${e.message}`);
+        // If file is expired or invalid, remove it
         if (e.message.includes('400')) {
-           await db.query('DELETE FROM media WHERE file_id = $1', [fileId]);
-           logAction('MEDIA_DELETE_STALE', `FileID: ${fileId}`);
-           broadcastUpdate();
+           try {
+               await db.query('DELETE FROM media WHERE file_id = $1', [fileId]);
+               logAction('MEDIA_DELETE_STALE', `FileID: ${fileId}`);
+               broadcastUpdate(); // Notify clients to refetch
+           } catch (dbErr) {
+               console.error("Error deleting stale media:", dbErr.message);
+           }
         }
         return null;
       }
     };
+    
     let profile_photo_url = 'https://placehold.co/300x300/1a1a20/e0e0e0?text=Profile';
     if (config.profile_photo_file_id) {
       profile_photo_url = await getFileUrl(config.profile_photo_file_id);
     }
+    
     const enrichedMedia = await Promise.all(
       media.map(async (item) => {
         let url = null;
@@ -683,10 +761,11 @@ app.get('/api/content', async (req, res) => {
             url = `https://drive.google.com/file/d/${item.file_id}/preview`;
             break;
         }
-        if (!url) return null.
+        if (!url) return null; // Don't include media if URL failed
         return { ...item, url: url };
       })
     );
+    
     res.json({
       profile: {
         name: config.profile_name,
@@ -700,7 +779,7 @@ app.get('/api/content', async (req, res) => {
         call: config.contact_call,
         whatsapp_link: `https://wa.me/${(config.contact_phone_1 || '').replace(/[^0-9]/g, '')}`
       },
-      media: enrichedMedia.filter(Boolean)
+      media: enrichedMedia.filter(Boolean) // Filter out any nulls
     });
   } catch (e) {
     console.error('API Error /api/content:', e.message);
@@ -708,6 +787,7 @@ app.get('/api/content', async (req, res) => {
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
+
 app.post('/api/notify-click', (req, res) => {
   const ip = req.ip;
   const { mediaType, project, caption } = req.body;
@@ -723,6 +803,8 @@ app.post('/api/notify-click', (req, res) => {
   }
   res.sendStatus(200);
 });
+
+// Fallback for client-side routing (handles refresh)
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
