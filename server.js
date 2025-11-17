@@ -1,7 +1,7 @@
-// --- server.js (v1.6) ---
+// --- server.js (v1.7) ---
 // This is the backend for your portfolio.
 // It connects to a persistent cloud database (Neon) to save all data.
-// NEW: Adds support for Google Drive/YouTube links and editing media.
+// NEW: All commands are now prefixed with '/' for use with BotFather.
 
 // --- Imports ---
 const express = require('express');
@@ -22,11 +22,7 @@ const {
 
 if (!TELEGRAM_BOT_TOKEN || !ADMIN_CHAT_ID || !HOST_URL || !DATABASE_URL) {
   console.error('Missing critical environment variables!');
-  console.log('Please check your Render environment settings. You need:');
-  console.log('TELEGRAM_BOT_TOKEN');
-  console.log('ADMIN_CHAT_ID');
-  console.log('HOST_URL');
-  console.log('DATABASE_URL (from Neon)');
+  // ... (error logging)
   process.exit(1);
 }
 
@@ -37,7 +33,6 @@ app.use(express.json());
 app.set('trust proxy', true);
 
 // --- Database Setup (PostgreSQL) ---
-// Use the Neon connection string from environment variables
 const db = new Pool({
   connectionString: DATABASE_URL,
 });
@@ -89,7 +84,7 @@ async function initializeDatabase() {
       contact_phone_1: '+91 9036526421',
       contact_email: 'afzal24052002@gmail.com',
       contact_call: '+91 9036526421',
-      site_status: 'live' // 'live' or 'paused'
+      site_status: 'live'
     };
     const configQuery = `INSERT INTO site_config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING`;
     for (const [key, value] of Object.entries(initialConfig)) {
@@ -98,7 +93,7 @@ async function initializeDatabase() {
     console.log('Database schema initialized.');
   } catch (err) {
     console.error('Database initialization error:', err.stack);
-    process.exit(1); // Exit if database fails
+    process.exit(1);
   }
 }
 
@@ -120,6 +115,7 @@ async function getConfig() {
 }
 
 // --- Server-Sent Events (SSE) Setup ---
+// ... (omitting duplicate sseHandler, broadcastUpdate... same as v1.6) ...
 let sseClients = [];
 function sseHandler(req, res) {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -190,6 +186,7 @@ function parseMediaCaption(caption = '') {
 }
 
 // --- Middleware (Pause, IP Block, Visitor Notify) ---
+// ... (omitting duplicate middleware code... same as v1.6) ...
 app.use(async (req, res, next) => {
   if (req.path.startsWith('/api/webhook/')) return next();
   const config = await getConfig();
@@ -252,11 +249,14 @@ bot.on('photo', async (msg) => {
   const fileId = photo.file_id;
   const fileUniqueId = photo.file_unique_id;
   logAction('PHOTO_RECEIVED', `FileID: ${fileId}, Caption: ${caption}`);
-  if (caption.toLowerCase().includes('profile photo') || caption.toLowerCase().includes('profile')) {
+  
+  // UPDATED: Check for /profilephoto command caption
+  if (caption.toLowerCase().includes('/profilephoto')) {
     await updateConfig('profile_photo_file_id', fileId);
     logAction('PROFILE_PHOTO_UPDATE', `New FileID: ${fileId}`);
     return bot.sendMessage(msg.chat.id, '✅ Profile photo updated!');
   }
+  
   const { category, projectName } = parseMediaCaption(caption);
   try {
     const query = `
@@ -298,116 +298,131 @@ bot.on('video', async (msg) => {
   }
 });
 
-// --- NEW: Helper function to parse external links ---
+// --- Helper function to parse external links ---
+// ... (omitting duplicate parseExternalLink... same as v1.6) ...
 function parseExternalLink(link) {
   try {
     const url = new URL(link);
-    // YouTube
     if (url.hostname.includes('youtube.com') || url.hostname.includes('youtu.be')) {
-      const videoId = url.hostname.includes('youtu.be')
-        ? url.pathname.slice(1)
-        : url.searchParams.get('v');
+      const videoId = url.hostname.includes('youtu.be') ? url.pathname.slice(1) : url.searchParams.get('v');
       if (!videoId) return null;
-      return {
-        type: 'youtube',
-        id: videoId,
-        unique_id: `youtube-${videoId}`
-      };
+      return { type: 'youtube', id: videoId, unique_id: `youtube-${videoId}` };
     }
-    // Google Drive
     if (url.hostname.includes('drive.google.com')) {
       const parts = url.pathname.split('/');
       const fileId = parts.find((part, index) => parts[index - 1] === 'd');
       if (!fileId) return null;
-      return {
-        type: 'gdrive',
-        id: fileId,
-        unique_id: `gdrive-${fileId}`
-      };
+      return { type: 'gdrive', id: fileId, unique_id: `gdrive-${fileId}` };
     }
-  } catch (e) {
-    console.error('Link parsing error:', e.message);
-    return null;
-  }
+  } catch (e) { console.error('Link parsing error:', e.message); return null; }
   return null;
 }
 
+// --- NEW: Helper function for editing media ---
+async function handleEdit(fieldToUpdate, editId, editValue, chatId) {
+  if (!editId || !editValue) {
+    const usage = fieldToUpdate === 'project_name' ? '`/edittitle <id> <new title>`' : '`/editdesc <id> <new description>`';
+    return bot.sendMessage(chatId, `Usage: ${usage}`, { parse_mode: 'Markdown' });
+  }
+  try {
+    const { rowCount } = await db.query(`UPDATE media SET ${fieldToUpdate} = $1 WHERE file_unique_id = $2`, [editValue, editId]);
+    if (rowCount > 0) {
+      logAction('MEDIA_EDIT', `ID: ${editId}, Field: ${fieldToUpdate}`);
+      broadcastUpdate();
+      return bot.sendMessage(chatId, `✅ Media ${editId} updated.`);
+    } else {
+      return bot.sendMessage(chatId, `❌ Media ${editId} not found.`);
+    }
+  } catch (e) {
+    return bot.sendMessage(chatId, `❌ Error updating: ${e.message}`);
+  }
+}
 
-// --- Telegram Text Command Handler (UPDATED) ---
+
+// --- Telegram Text Command Handler (UPDATED FOR /) ---
 bot.on('text', async (msg) => {
   if (!isAuthorized(msg.chat.id)) return;
   const text = msg.text.trim();
+
+  // We only care about commands
+  if (!text.startsWith('/')) return;
+
   const [command, ...args] = text.split(' ');
-  const value = args.join(' ');
+  const value = args.join(' '); // All text after the command
   logAction('COMMAND_RECEIVED', `"${text}"`);
 
   switch (command.toLowerCase()) {
-    case 'update':
-    case 'set':
-      // ... (same as v1.5)
-      const [subCommand, ...subArgs] = args;
-      const subValue = subArgs.join(' ');
-      if (!subValue) return bot.sendMessage(msg.chat.id, `Usage: set <key> <value>`);
-      switch(subCommand.toLowerCase()) {
-        case 'phone':
-          await updateConfig('contact_phone_1', subValue);
-          return bot.sendMessage(msg.chat.id, `✅ WhatsApp Phone updated to: ${subValue}`);
-        case 'call':
-          await updateConfig('contact_call', subValue);
-          return bot.sendMessage(msg.chat.id, `✅ Call Now Phone updated to: ${subValue}`);
-        case 'email':
-          await updateConfig('contact_email', subValue);
-          return bot.sendMessage(msg.chat.id, `✅ Email updated to: ${subValue}`);
-        case 'desc':
-          await updateConfig('profile_desc', subValue);
-          return bot.sendMessage(msg.chat.id, `✅ Description updated!`);
-        case 'name':
-          await updateConfig('profile_name', subValue);
-          return bot.sendMessage(msg.chat.id, `✅ Name updated to: ${subValue}`);
-        case 'title':
-          await updateConfig('profile_title', subValue);
-          return bot.sendMessage(msg.chat.id, `✅ Title updated to: ${subValue}`);
-      }
-      return bot.sendMessage(msg.chat.id, `Unknown set command: "${subCommand}".`);
-    
-    // --- NEW: Edit Command ---
-    case 'edit':
-      const [editKey, editId, ...editValueArr] = args;
-      const editValue = editValueArr.join(' ');
+    case '/start':
+    case '/help':
+      const helpText = `
+👋 Welcome, Admin!
+You can use the menu button [/] to see commands.
 
-      if (!editKey || !editId || !editValue) {
-        return bot.sendMessage(msg.chat.id, `Usage:\n\`edit title <id> <new title>\`\n\`edit desc <id> <new description>\``, { parse_mode: 'Markdown' });
-      }
-      try {
-        let fieldToUpdate = '';
-        if (editKey.toLowerCase() === 'title') fieldToUpdate = 'project_name';
-        if (editKey.toLowerCase() === 'desc') fieldToUpdate = 'caption';
+*Profile Commands:*
+- \`/setname <Your Name>\`
+- \`/settitle <Your Title>\`
+- \`/setdesc <Your Description>\`
+- \`/setphone <+91...>\` (WhatsApp)
+- \`/setcall <+91...>\` ("Call Now")
+- \`/setemail <your@email.com>\`
 
-        if (!fieldToUpdate) {
-          return bot.sendMessage(msg.chat.id, `Unknown field: "${editKey}". Use 'title' or 'desc'.`);
-        }
+*Media Uploads:*
+- Send a *Photo* or *Video* (<20MB) to upload it.
+- Caption a *Photo* with \`/profilephoto\` to update your site pic.
+- \`/add <link> <category> [project]\`
+  (Adds G-Drive/YouTube links)
+  (Example: \`/add <youtube_link> anamorphic MyProject\`)
 
-        const { rowCount } = await db.query(`UPDATE media SET ${fieldToUpdate} = $1 WHERE file_unique_id = $2`, [editValue, editId]);
-        
-        if (rowCount > 0) {
-          logAction('MEDIA_EDIT', `ID: ${editId}, Field: ${fieldToUpdate}`);
-          broadcastUpdate();
-          return bot.sendMessage(msg.chat.id, `✅ Media ${editId} updated.`);
-        } else {
-          return bot.sendMessage(msg.chat.id, `❌ Media ${editId} not found.`);
-        }
-      } catch (e) {
-        return bot.sendMessage(msg.chat.id, `❌ Error updating: ${e.message}`);
-      }
+*Media Management:*
+- \`/list\` - Show ALL media items and IDs.
+- \`/delete <id>\` - Remove media.
+- \`/edittitle <id> <new title>\`
+- \`/editdesc <id> <new description>\`
 
-    // --- NEW: Add Video by Link Command ---
-    case 'add':
-    case 'addvideo':
+*Site Management:*
+- \`/pause\` - Show "Under Maintenance"
+- \`/resume\` - Make website live
+
+*Security:*
+- \`/block <ip>\`
+- \`/unblock <ip>\`
+- \`/listblocked\`
+      `;
+      return bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'Markdown' });
+
+    // --- Profile Commands ---
+    case '/setname':
+      if (!value) return bot.sendMessage(msg.chat.id, 'Usage: /setname <Your Name>');
+      await updateConfig('profile_name', value);
+      return bot.sendMessage(msg.chat.id, `✅ Name updated to: ${value}`);
+    case '/settitle':
+      if (!value) return bot.sendMessage(msg.chat.id, 'Usage: /settitle <Your Title>');
+      await updateConfig('profile_title', value);
+      return bot.sendMessage(msg.chat.id, `✅ Title updated to: ${value}`);
+    case '/setdesc':
+      if (!value) return bot.sendMessage(msg.chat.id, 'Usage: /setdesc <Your Description>');
+      await updateConfig('profile_desc', value);
+      return bot.sendMessage(msg.chat.id, `✅ Description updated!`);
+    case '/setphone':
+      if (!value) return bot.sendMessage(msg.chat.id, 'Usage: /setphone <+91...>');
+      await updateConfig('contact_phone_1', value);
+      return bot.sendMessage(msg.chat.id, `✅ WhatsApp Phone updated to: ${value}`);
+    case '/setcall':
+      if (!value) return bot.sendMessage(msg.chat.id, 'Usage: /setcall <+91...>');
+      await updateConfig('contact_call', value);
+      return bot.sendMessage(msg.chat.id, `✅ Call Now Phone updated to: ${value}`);
+    case '/setemail':
+      if (!value) return bot.sendMessage(msg.chat.id, 'Usage: /setemail <your@email.com>');
+      await updateConfig('contact_email', value);
+      return bot.sendMessage(msg.chat.id, `✅ Email updated to: ${value}`);
+
+    // --- Media Commands ---
+    case '/add':
       const [link, category, ...projectNameArr] = args;
       const projectName = projectNameArr.join(' ');
       
       if (!link || !category) {
-        return bot.sendMessage(msg.chat.id, 'Usage: `add <link> <category> [project_name]`\nExample: `add <youtube_link> anamorphic MyProject`', { parse_mode: 'Markdown' });
+        return bot.sendMessage(msg.chat.id, 'Usage: `/add <link> <category> [project_name]`\nExample: `/add <youtube_link> anamorphic MyProject`', { parse_mode: 'Markdown' });
       }
       const parsedLink = parseExternalLink(link);
       if (!parsedLink) {
@@ -415,7 +430,6 @@ bot.on('text', async (msg) => {
       }
       
       const { type, id: fileId, unique_id: fileUniqueId } = parsedLink;
-      
       const { category: parsedCategory, projectName: parsedProjectName } = parseMediaCaption(category + ' ' + (projectName || ''));
       
       try {
@@ -434,11 +448,20 @@ bot.on('text', async (msg) => {
         return bot.sendMessage(msg.chat.id, `❌ Error adding link: ${e.message}`);
       }
 
-    // --- Other Commands (delete, list, block, unblock, etc) ---
-    case 'delete':
-    case 'remove':
+    case '/edittitle':
+      const [titleId, ...titleArr] = args;
+      const newTitle = titleArr.join(' ');
+      await handleEdit('project_name', titleId, newTitle, msg.chat.id);
+      break;
+    case '/editdesc':
+      const [descId, ...descArr] = args;
+      const newDesc = descArr.join(' ');
+      await handleEdit('caption', descId, newDesc, msg.chat.id);
+      break;
+
+    case '/delete':
       const delId = args[0];
-      if (!delId) return bot.sendMessage(msg.chat.id, 'Usage: delete <file_unique_id>');
+      if (!delId) return bot.sendMessage(msg.chat.id, 'Usage: /delete <file_unique_id>');
       try {
         const { rowCount } = await db.query('DELETE FROM media WHERE file_unique_id = $1', [delId]);
         if (rowCount > 0) {
@@ -452,7 +475,7 @@ bot.on('text', async (msg) => {
         return bot.sendMessage(msg.chat.id, `❌ Error deleting: ${e.message}`);
       }
     
-    case 'list':
+    case '/list':
       try {
         const { rows } = await db.query('SELECT file_unique_id, type, category, caption, project_name FROM media ORDER BY timestamp DESC');
         if (rows.length === 0) return bot.sendMessage(msg.chat.id, 'No media found.');
@@ -462,9 +485,10 @@ bot.on('text', async (msg) => {
         return bot.sendMessage(msg.chat.id, `❌ Error listing: ${e.message}`);
       }
 
-    case 'block':
+    // --- Site Management ---
+    case '/block':
       const ipToBlock = args[0];
-      if (!ipToBlock) return bot.sendMessage(msg.chat.id, 'Usage: `block <ip_address>`');
+      if (!ipToBlock) return bot.sendMessage(msg.chat.id, 'Usage: `/block <ip_address>`');
       try {
         await db.query('INSERT INTO blocked_ips (ip) VALUES ($1) ON CONFLICT (ip) DO NOTHING', [ipToBlock]);
         blockedIPs.add(ipToBlock);
@@ -474,9 +498,9 @@ bot.on('text', async (msg) => {
         return bot.sendMessage(msg.chat.id, `❌ Error blocking IP: ${e.message}`);
       }
 
-    case 'unblock':
+    case '/unblock':
       const ipToUnblock = args[0];
-      if (!ipToUnblock) return bot.sendMessage(msg.chat.id, 'Usage: `unblock <ip_address>`');
+      if (!ipToUnblock) return bot.sendMessage(msg.chat.id, 'Usage: `/unblock <ip_address>`');
       try {
         const { rowCount } = await db.query('DELETE FROM blocked_ips WHERE ip = $1', [ipToUnblock]);
         blockedIPs.delete(ipToUnblock);
@@ -487,73 +511,37 @@ bot.on('text', async (msg) => {
         return bot.sendMessage(msg.chat.id, `❌ Error unblocking IP: ${e.message}`);
       }
 
-    case 'listblocked':
+    case '/listblocked':
       const ips = Array.from(blockedIPs);
       if (ips.length === 0) return bot.sendMessage(msg.chat.id, 'No IPs are currently blocked.');
       return bot.sendMessage(msg.chat.id, `*Blocked IPs:*\n\`${ips.join('\n')}\``, { parse_mode: 'Markdown' });
     
-    case 'pause':
+    case '/pause':
       await updateConfig('site_status', 'paused');
       logAction('SITE_PAUSE', 'Site paused by admin');
       return bot.sendMessage(msg.chat.id, '⏸️ Website is now PAUSED.');
     
-    case 'resume':
+    case '/resume':
       await updateConfig('site_status', 'live');
       logAction('SITE_RESUME', 'Site resumed by admin');
       return bot.sendMessage(msg.chat.id, '▶️ Website is now LIVE.');
 
-    case '/start':
-    case 'help':
-      const helpText = `
-👋 Welcome, Admin!
-
-*Content Updates:*
-- \`set name <Your Name>\`
-- \`set title <Your Title>\`
-- \`set desc <Your Description>\`
-- \`set phone <+91...>\` (WhatsApp)
-- \`set call <+91...>\` ("Call Now")
-- \`set email <your@email.com>\`
-
-*Media Uploads:*
-- Send a *Photo* or *Video* (<20MB).
-- Caption with *'profile photo'* to update profile pic.
-- **(NEW)** \`add <link> <category> [project]\`
-  Example: \`add <youtube_link> anamorphic MyProject\`
-  (Supports YouTube & Google Drive links)
-
-*Media Management (NEW):*
-- \`list\` - Show ALL media items and IDs.
-- \`delete <id>\` - Remove media.
-- \`edit title <id> <new title>\`
-- \`edit desc <id> <new description>\`
-
-*Site Management:*
-- \`pause\` / \`resume\`
-
-*Security:*
-- \`block <ip>\` / \`unblock <ip>\` / \`listblocked\`
-      `;
-      return bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'Markdown' });
-
     default:
-      return bot.sendMessage(msg.chat.id, '❓ Unknown command. Type `help`.');
+      return bot.sendMessage(msg.chat.id, '❓ Unknown command. Type /help to see all commands.');
   }
 });
 
 // --- API Endpoints ---
+// ... (omitting duplicate /api/webhook, /api/sse, /api/content, /api/notify-click... same as v1.6) ...
 app.post(`/api/webhook/${TELEGRAM_BOT_TOKEN}`, (req, res) => {
   bot.processUpdate(req.body);
   res.sendStatus(200);
 });
 app.get('/api/sse', sseHandler);
-
-// --- UPDATED /api/content ---
 app.get('/api/content', async (req, res) => {
   try {
     const config = await getConfig();
     const { rows: media } = await db.query('SELECT * FROM media ORDER BY timestamp DESC');
-
     const getFileUrl = async (fileId) => {
       try {
         return await bot.getFileLink(fileId);
@@ -568,12 +556,10 @@ app.get('/api/content', async (req, res) => {
         return null;
       }
     };
-    
     let profile_photo_url = 'https://placehold.co/300x300/1a1a20/e0e0e0?text=Profile';
     if (config.profile_photo_file_id) {
       profile_photo_url = await getFileUrl(config.profile_photo_file_id);
     }
-
     const enrichedMedia = await Promise.all(
       media.map(async (item) => {
         let url = null;
@@ -593,7 +579,6 @@ app.get('/api/content', async (req, res) => {
         return { ...item, url: url };
       })
     );
-
     res.json({
       profile: {
         name: config.profile_name,
@@ -605,7 +590,7 @@ app.get('/api/content', async (req, res) => {
         phone: config.contact_phone_1,
         email: config.contact_email,
         call: config.contact_call,
-        whatsapp_link: `httpsM://wa.me/${(config.contact_phone_1 || '').replace(/[^0-9]/g, '')}`
+        whatsapp_link: `https://wa.me/${(config.contact_phone_1 || '').replace(/[^0-9]/g, '')}`
       },
       media: enrichedMedia.filter(Boolean)
     });
