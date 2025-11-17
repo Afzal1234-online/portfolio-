@@ -1,7 +1,7 @@
 {
   "name": "telegram-cms-portfolio",
-  "version": "1.5.0",
-  "description": "A 3D artist portfolio with a persistent cloud database (Neon).",
+  "version": "1.6.0",
+  "description": "A 3D artist portfolio with a persistent cloud database, supporting Telegram, G-Drive, and YouTube links.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
