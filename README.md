@@ -1,67 +1,62 @@
-​3D Artist Portfolio - Telegram CMS (v1.4 - Persistent)
+​3D Artist Portfolio - Telegram CMS (v1.5 - Cloud DB)
 ​This is a complete, production-ready portfolio website for a 3D artist, where all content—media, profile info, and contact details—is managed entirely from a private Telegram bot.
-​This version solves the database-reset problem by saving your database to a persistent disk.
-​New Features in v1.4
-​Persistent Database: Your data (profile, media, settings) will now survive server restarts and sleep cycles.
-​Pause/Resume Site: New pause and resume commands to take your site offline.
-​Advanced Click Tracking: Get a Telegram notification when a visitor clicks any image or video.
-​Visitor Notifications: Get a Telegram message with the visitor's IP when they first load or refresh your site.
-​IP Blocking: Admin commands block <ip>, unblock <ip>, and listblocked.
-​"CALL Now" Button: Replaced the "Telegram" contact card.
-​1. How to Deploy (or Update)
-​This is the most important part. You must follow these steps to add the Free Disk (permanent memory) to your project.
-​Step 1: Upload the New Code to GitHub
+​This version uses a 100% free cloud database (Neon) to permanently fix the "resetting page" problem. No credit card is required.
+​1. How to Deploy (The New, Permanent Fix)
+​You will do this one time.
+​Step 1: Get Your Free Database URL from Neon (No Card Needed)
+​Go to Neon.tech and click "Sign up".
+​Sign up with Google. This is the fastest way and requires no credit card.
+​After signup, it will ask you to create a project.
+​Project Name: my-portfolio (or any name)
+​Click "Create Project".
+​Wait 10 seconds. You will see your "Project Dashboard".
+​In the center, find the "Connection Details" box.
+​Look for the "Connection string" and click the "Copy" icon. It looks like this:
+postgres://afzal:A1b2...etc@...
+​This is your DATABASE_URL. You have now fixed the "memory" problem.
+​Step 2: Upload the New Code (v1.5) to GitHub
 ​Go to your GitHub repository.
-​Delete all the old files (server.js, package.json, README.md, and the public folder).
-​Upload the 4 new files I just gave you (v1.4) in the correct structure:
-​package.json
-​server.js
-​README.md
+​Delete all 4 old files (server.js, package.json, README.md, and the public folder).
+​Upload all 4 NEW files I just gave you (v1.5). Make sure the structure is correct:
+​package.json (v1.5)
+​server.js (v1.5)
+​README.md (v1.5)
 ​public/ (folder)
-​index.html (inside public)
-​Step 2: Add a Free Disk on Render
+​index.html (v1.5)
+​Step 3: Update Your Secrets on Render
 ​Go to your Render dashboard.
 ​Click on your service name (e.g., afzal-portfolio-8rlx).
-​On the left-hand menu, click "Disks".
-​Click the "Add Disk" button.
-​Fill out the form exactly like this:
-​Name: my-data-disk (or any name)
-​Mount Path: ./.data  <--- This is critical!
-​Size (GB): 1 (This is the smallest and is free)
-​Click "Save".
-​Step 3: Wait and Redeploy
-​After you save the disk, Render will automatically redeploy your server.
-​Go to the "Logs" tab to watch.
-​You will see a new line in the logs: Database is now persistently stored at: ./.data/portfolio.sqlite
-​Once it says "Your service is live", your site is permanently fixed.
-​From now on, your database will never be deleted again.
+​On the left menu, click "Environment".
+​You do not need "Disks" anymore! We are using Neon.
+​You must add your new secret:
+​Click "+ Add Environment Variable".
+​Key: DATABASE_URL
+​Value: Paste your Neon connection string (the one you copied in Step 1).
+​You still need your other 3 secrets:
+​TELEGRAM_BOT_TOKEN (your bot token)
+​ADMIN_CHAT_ID (your ID)
+​HOST_URL (your Render URL: https://afzal-portfolio-8rlx.onrender.com)
+​That's it! Render will automatically restart with the new code. It will connect to your permanent Neon database, and your website will never reset again.
 ​2. How to Use (Telegram Commands)
 ​All commands are sent as messages to your bot from your admin account.
 ​Content Updates:
 ​set name <Your Name>
 ​set title <Your Title>
 ​set desc <Your Description>
-​set phone <+91...> (This is for the WhatsApp button)
-​set call <+91...> (This is for the "Call Now" button)
+​set phone <+91...> (WhatsApp number)
+​set call <+91...> ("Call Now" number)
 ​set email <your@email.com>
 ​Media Uploads:
 ​Send a Photo or Video to upload it.
 ​Caption with anamorphic, stall, or event to categorize it.
 ​Caption with profile photo to update your site's profile picture.
 ​Media Management:
-​list
-​Shows ALL media items and their IDs.
-​delete <file_unique_id>
-​Removes media from the site.
+​list - Show ALL media items and their IDs.
+​delete <file_unique_id> - Remove media from the site.
 ​Site Management:
-​pause
-​Shows a "Under Maintenance" page to all visitors.
-​resume
-​Makes your website live again.
+​pause - Show a "Under Maintenance" page to all visitors.
+​resume - Makes your website live again.
 ​Security:
 ​block <ip>
-​Blocks an IP address from visiting your site.
 ​unblock <ip>
-​Unblocks an IP address.
 ​listblocked
-​Shows all IPs you have blocked.

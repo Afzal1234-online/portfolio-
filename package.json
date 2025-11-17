@@ -1,7 +1,7 @@
 {
   "name": "telegram-cms-portfolio",
-  "version": "1.4.0",
-  "description": "A 3D artist portfolio with persistent database and advanced tracking.",
+  "version": "1.5.0",
+  "description": "A 3D artist portfolio with a persistent cloud database (Neon).",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -10,11 +10,11 @@
   "author": "Mohammed Afzal (via Gemini)",
   "license": "MIT",
   "dependencies": {
-    "better-sqlite3": "^11.1.2",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "node-telegram-bot-api": "^0.66.0"
+    "node-telegram-bot-api": "^0.66.0",
+    "pg": "^8.12.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.4"
