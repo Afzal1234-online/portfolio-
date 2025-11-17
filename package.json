@@ -1,7 +1,7 @@
 {
   "name": "telegram-cms-portfolio",
-  "version": "1.7.0",
-  "description": "A 3D artist portfolio with a persistent cloud database, supporting /commands for Telegram.",
+  "version": "1.9.0",
+  "description": "A 3D artist portfolio with a persistent cloud database, featuring a conversational bot with batch link uploading.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
