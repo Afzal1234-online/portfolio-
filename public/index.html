@@ -909,7 +909,7 @@
                     </div>
                     <div class="hero-profile-card">
                         <div class="profile-pic" data-id="profile-pic-container">
-                            <img src="https://placehold.co/300x300/1a1a20/e0e0e0?text=Profile" alt="Mohammed Afzal" data-id="profile-pic">
+                            <img src="httpsD://placehold.co/300x300/1a1a20/e0e0e0?text=Profile" alt="Mohammed Afzal" data-id="profile-pic">
                         </div>
                         <h3>Available for Freelance</h3>
                         <p>Let's create something amazing together.</p>
@@ -1355,7 +1355,7 @@
                 elements.lightboxVideo.src = '';
             }
 
-            // --- NEW: Function to send click notification ---
+            // --- Function to send click notification ---
             async function sendClickNotification(item) {
                 try {
                     await fetch('/api/notify-click', {
@@ -1373,7 +1373,6 @@
                     console.warn('Could not send click notification', error);
                 }
             }
-            // --- END NEW ---
 
             // --- Mobile Nav ---
             function initMobileNav() {
