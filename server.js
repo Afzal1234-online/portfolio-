@@ -510,4 +510,138 @@ bot.on('text', async (msg) => {
 *Content Updates:*
 - \`set name <Your Name>\`
 - \`set title <Your Title>\`
-- \`
+- \`set desc <Your Description>\`
+- \`set phone <+91...>\` (WhatsApp)
+- \`set call <+91...>\` ("Call Now")
+- \`set email <your@email.com>\`
+
+*Media Uploads:*
+- Send a *Photo* or *Video* (<20MB).
+- Caption with *'profile photo'* to update profile pic.
+- **(NEW)** \`add <link> <category> [project]\`
+  Example: \`add <youtube_link> anamorphic MyProject\`
+  (Supports YouTube & Google Drive links)
+
+*Media Management (NEW):*
+- \`list\` - Show ALL media items and IDs.
+- \`delete <id>\` - Remove media.
+- \`edit title <id> <new title>\`
+- \`edit desc <id> <new description>\`
+
+*Site Management:*
+- \`pause\` / \`resume\`
+
+*Security:*
+- \`block <ip>\` / \`unblock <ip>\` / \`listblocked\`
+      `;
+      return bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'Markdown' });
+
+    default:
+      return bot.sendMessage(msg.chat.id, '❓ Unknown command. Type `help`.');
+  }
+});
+
+// --- API Endpoints ---
+app.post(`/api/webhook/${TELEGRAM_BOT_TOKEN}`, (req, res) => {
+  bot.processUpdate(req.body);
+  res.sendStatus(200);
+});
+app.get('/api/sse', sseHandler);
+
+// --- UPDATED /api/content ---
+app.get('/api/content', async (req, res) => {
+  try {
+    const config = await getConfig();
+    const { rows: media } = await db.query('SELECT * FROM media ORDER BY timestamp DESC');
+
+    const getFileUrl = async (fileId) => {
+      try {
+        return await bot.getFileLink(fileId);
+      } catch (e) {
+        console.warn(`Could not get URL for file_id ${fileId}: ${e.message}`);
+        logAction('FILE_LINK_ERROR', `FileID: ${fileId}, Error: ${e.message}`);
+        if (e.message.includes('400')) {
+           await db.query('DELETE FROM media WHERE file_id = $1', [fileId]);
+           logAction('MEDIA_DELETE_STALE', `FileID: ${fileId}`);
+           broadcastUpdate();
+        }
+        return null;
+      }
+    };
+    
+    let profile_photo_url = 'https://placehold.co/300x300/1a1a20/e0e0e0?text=Profile';
+    if (config.profile_photo_file_id) {
+      profile_photo_url = await getFileUrl(config.profile_photo_file_id);
+    }
+
+    const enrichedMedia = await Promise.all(
+      media.map(async (item) => {
+        let url = null;
+        switch(item.type) {
+          case 'photo':
+          case 'video':
+            url = await getFileUrl(item.file_id);
+            break;
+          case 'youtube':
+            url = `https://www.youtube.com/embed/${item.file_id}`;
+            break;
+          case 'gdrive':
+            url = `https://drive.google.com/file/d/${item.file_id}/preview`;
+            break;
+        }
+        if (!url) return null;
+        return { ...item, url: url };
+      })
+    );
+
+    res.json({
+      profile: {
+        name: config.profile_name,
+        title: config.profile_title,
+        description: config.profile_desc,
+        photo_url: profile_photo_url
+      },
+      contacts: {
+        phone: config.contact_phone_1,
+        email: config.contact_email,
+        call: config.contact_call,
+        whatsapp_link: `httpsM://wa.me/${(config.contact_phone_1 || '').replace(/[^0-9]/g, '')}`
+      },
+      media: enrichedMedia.filter(Boolean)
+    });
+  } catch (e) {
+    console.error('API Error /api/content:', e.message);
+    logAction('API_ERROR', `/api/content: ${e.message}`);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+app.post('/api/notify-click', (req, res) => {
+  const ip = req.ip;
+  const { mediaType, project, caption } = req.body;
+  if (mediaType === 'video') {
+    logAction('VIDEO_CLICK', `IP: ${ip}, Project: ${project}, Caption: ${caption}`);
+    notifyAdmin(`▶️ Video Clicked: *${project || 'Video'}*\n(Caption: ${caption || 'N/A'})\nFrom IP: \`${ip}\``);
+  } else if (mediaType === 'youtube' || mediaType === 'gdrive') {
+    logAction('VIDEO_CLICK', `IP: ${ip}, Project: ${project}, Caption: ${caption}`);
+    notifyAdmin(`▶️ External Video Clicked: *${project || 'Video'}*\n(Type: ${mediaType})\nFrom IP: \`${ip}\``);
+  } else {
+    logAction('PHOTO_CLICK', `IP: ${ip}, Project: ${project}, Caption: ${caption}`);
+    notifyAdmin(`🖼️ Image Clicked: *${project || 'Image'}*\n(Caption: ${caption || 'N/A'})\nFrom IP: \`${ip}\``);
+  }
+  res.sendStatus(200);
+});
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// --- Start Server ---
+async function startServer() {
+  await initializeDatabase();
+  await loadBlockedIPs();
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server listening on http://localhost:${PORT}`);
+    logAction('SERVER_START');
+  });
+}
+
+startServer();
